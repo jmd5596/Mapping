@@ -1,0 +1,23 @@
+#!/bin/bash
+#SBATCH --mem=72G
+#SBATCH --array=[1-34]
+#SBATCH --job-name=UMI_rhesus
+#SBATCH --partition=short
+#SBATCH --output=/rhesusUMI%a.out
+#SBATCH --error=/rhesusUMI%a.out
+
+TMPDIRECTORY_PATH="/storage/goodell/projects/josdlf/MSH2mice_rhesusBatch2/230104_merged_renamed_raw_fastqs"
+SAMPLE_PREFIX="rhesus2"
+JAVA_OPTIONS="-Xmx71G -Xms71G"
+JDIRECTORY_PATH="/path/to/bcl_files"
+# mkdir "${JDIRECTORY_PATH}/fastq"
+# mkdir "${JDIRECTORY_PATH}/fastq/metrics"
+## mkdir "${TMP_DIRECTORY_PATH}/${SLURM_ARRAY_TASK_ID}"
+pwd; hostname; date
+
+
+bcl2fastq -R "/storage/goodell/projects/chiraag/BCL_rawOutput_backup/POLE_germline_4_220811_M07326_0040_000000000-KCL7P" -i "/storage/goodell/projects/chiraag/BCL_rawOutput_backup/POLE_germline_4_220811_M07326_0040_000000000-KCL7P/Data/Intensities/BaseCalls" -o "${JDIRECTORY_PATH}/fastq/reverse" --sample-sheet "${JDIRECTORY_PATH}/Book16.csv" --ignore-missing-bcls --ignore-missing-filter --ignore-missing-positions --ignore-missing-controls --loading-threads 16 -p 32
+
+##convert to bam so that way you can extract UMI
+gatk --java-options "${JAVA_OPTIONS}" FastqToSam -F1 "${TMPDIRECTORY_PATH}/${SAMPLE_PREFIX}_${SLURM_ARRAY_TASK_ID}_R1.fastq.gz" -F2 "${TMPDIRECTORY_PATH}/${SAMPLE_PREFIX}_${SLURM_ARRAY_TASK_ID}_R2.fastq.gz" -O /dev/stdout -SM MSH2_ |
+fgbio ExtractUmisFromBam -i /dev/stdin --read-structure 5M2S144T 5M2S144T --output "${JDIRECTORY_PATH}/mergedBAM/${SAMPLE_PREFIX}_${SLURM_ARRAY_TASK_ID}_umiextracted.bam"  --molecular-index-tags RX

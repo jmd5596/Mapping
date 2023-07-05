@@ -1,0 +1,78 @@
+#!/bin/bash
+#SBATCH --array=[1-5]
+#SBATCH --job-name=rhesus2_con
+#SBATCH --mem=120G
+#SBATCH --output=/rhesus2_cons_%a.out
+#SBATCH --error=/rhesus2_cons_%a.out
+#SBATCH --partition=short
+
+
+#JosepineD
+# Updated 3-13-2023
+#sleep $(( RANDOM % 100 ))
+
+## Constants
+SAMPLE_PREFIX="species/specific"
+JDIRECTORY_PATH="input/pathway"
+TMPDIRECTORY_PATH="/path/to/bam"
+JAVA_OPTIONS="-Xmx119G -Xms119G"
+THREADS=12
+
+GENOME="rheMac10.fa"
+TARGET_INTERVAL_LIST="/rhesus_CHIP_panel_merged.interval_list"
+
+### "Waste management"
+## mkdir "${JDIRECTORY_PATH}/mergedAlignedBams"
+# mkdir "${JDIRECTORY_PATH}/hsMetrics_beforeConsensus"
+# mkdir "${JDIRECTORY_PATH}/hsMetrics_afterConsensus"
+# mkdir "${JDIRECTORY_PATH}/consensusBams"
+# mkdir "${JDIRECTORY_PATH}/tmp/${SLURM_ARRAY_TASK_ID}"
+# # ##this will cancel job if any task fails
+set -e
+gatk --java-options "${JAVA_OPTIONS}" FastqToSam -F1 "${TMPDIRECTORY_PATH}/${SAMPLE_PREFIX}_${SLURM_ARRAY_TASK_ID}_R1.fastq.gz" -F2 "${TMPDIRECTORY_PATH}/${SAMPLE_PREFIX}_${SLURM_ARRAY_TASK_ID}_R2.fastq.gz" -O /dev/stdout -SM MSH2_ |
+# samtools sort -@ 24 -n "${JDIRECTORY_PATH}/mergedBAM/${SAMPLE_PREFIX}_${SLURM_ARRAY_TASK_ID}_merged.bam" -o "${JDIRECTORY_PATH}/tmp/${SLURM_ARRAY_TASK_ID}/${SAMPLE_PREFIX}_${SLURM_ARRAY_TASK_ID}_sorted_umiextracted.bam"
+fgbio ExtractUmisFromBam -i /dev/stdin --read-structure 5M2S144T 5M2S144T --output "${JDIRECTORY_PATH}/tmp/${SLURM_ARRAY_TASK_ID}/${SAMPLE_PREFIX}_${SLURM_ARRAY_TASK_ID}_umiextracted.bam"  --molecular-index-tags RX
+
+#
+# #####Makes the fastq files ----NOTE: need to figure out way to have 2 outpus (R1 and R2) be redirected to bwa
+gatk --java-options "${JAVA_OPTIONS}" SamToFastq --INPUT "${JDIRECTORY_PATH}/mergedBAM/${SAMPLE_PREFIX}_${SLURM_ARRAY_TASK_ID}_umiextracted.bam" -F "${JDIRECTORY_PATH}/tmp/${SLURM_ARRAY_TASK_ID}/${SAMPLE_PREFIX}_${SLURM_ARRAY_TASK_ID}_sorted_unmapped_R1.fastq" -F2 "${JDIRECTORY_PATH}/tmp/${SLURM_ARRAY_TASK_ID}/${SAMPLE_PREFIX}_${SLURM_ARRAY_TASK_ID}_sorted_unmapped_R2.fastq" --CLIPPING_ATTRIBUTE "XT" --CLIPPING_ACTION "X" --TMP_DIR "${JDIRECTORY_PATH}/tmp/${SLURM_ARRAY_TASK_ID}"
+
+###this step does the mapping, sorting, and merging of mapped and unmapped bam files.
+bwa-mem2 mem -t ${THREADS} "${GENOME}" "${JDIRECTORY_PATH}/tmp/${SLURM_ARRAY_TASK_ID}/${SAMPLE_PREFIX}_${SLURM_ARRAY_TASK_ID}_sorted_unmapped_R1.fastq" "${JDIRECTORY_PATH}/tmp/${SLURM_ARRAY_TASK_ID}/${SAMPLE_PREFIX}_${SLURM_ARRAY_TASK_ID}_sorted_unmapped_R2.fastq" | \
+samtools fixmate -@ 12 -O bam - /dev/stdout | \
+gatk --java-options "${JAVA_OPTIONS}" MergeBamAlignment -ALIGNED /dev/stdin -UNMAPPED "${JDIRECTORY_PATH}/mergedBAM/${SAMPLE_PREFIX}_${SLURM_ARRAY_TASK_ID}_umiextracted.bam" -O "${JDIRECTORY_PATH}/mergedAlignedBams/${SAMPLE_PREFIX}_${SLURM_ARRAY_TASK_ID}_UMI_tagged_aligned.bam" -R "${GENOME}" --EXPECTED_ORIENTATIONS "FR" -MAX_GAPS "-1" --SORT_ORDER "coordinate" --CREATE_INDEX true --ALIGNER_PROPER_PAIR_FLAGS false --TMP_DIR "${JDIRECTORY_PATH}/tmp/${SLURM_ARRAY_TASK_ID}"
+# #
+
+######gatk ValidateSamFile -I "${JDIRECTORY_PATH}/tmp/${SLURM_ARRAY_TASK_ID}/${SAMPLE_PREFIX}_${SLURM_ARRAY_TASK_ID}_unmapped.bam" --IGNORE_WARNINGS true --MODE VERBOSE
+
+#quality checks
+gatk CollectHsMetrics -I "${JDIRECTORY_PATH}/mergedAlignedBams/${SAMPLE_PREFIX}_${SLURM_ARRAY_TASK_ID}_UMI_tagged_aligned.bam" -O "${JDIRECTORY_PATH}/hsMetrics_beforeConsensus/${SAMPLE_PREFIX}_${SLURM_ARRAY_TASK_ID}.HsMetrics" -BI "${TARGET_INTERVAL_LIST}" -TI "${TARGET_INTERVAL_LIST}" --PER_TARGET_COVERAGE "${JDIRECTORY_PATH}/hsMetrics_beforeConsensus/${SAMPLE_PREFIX}_${SLURM_ARRAY_TASK_ID}_PerTarget.HsMetrics"  -R "${GENOME}"
+#######need to include QC steps for above
+
+# #
+# # ######3Construction of consensus
+fgbio --tmp-dir="${JDIRECTORY_PATH}/tmp/${SLURM_ARRAY_TASK_ID}" GroupReadsByUmi --input "${JDIRECTORY_PATH}/mergedAlignedBams/${SAMPLE_PREFIX}_${SLURM_ARRAY_TASK_ID}_UMI_tagged_aligned.bam" --output "${JDIRECTORY_PATH}/tmp/${SLURM_ARRAY_TASK_ID}/${SAMPLE_PREFIX}_${SLURM_ARRAY_TASK_ID}_grouped_unmapped.bam" --strategy=adjacency --min-map-q 30
+# # # #
+fgbio --compression 0 CallMolecularConsensusReads --input "${JDIRECTORY_PATH}/tmp/${SLURM_ARRAY_TASK_ID}/${SAMPLE_PREFIX}_${SLURM_ARRAY_TASK_ID}_grouped_unmapped.bam" --output "${JDIRECTORY_PATH}/tmp/${SLURM_ARRAY_TASK_ID}/${SAMPLE_PREFIX}_${SLURM_ARRAY_TASK_ID}_consensus_unmapped.bam" --min-reads=3 --min-input-base-quality 30 --error-rate-post-umi 30 --threads 6
+fgbio --compression 1 FilterConsensusReads \
+    --input "${JDIRECTORY_PATH}/tmp/${SLURM_ARRAY_TASK_ID}/${SAMPLE_PREFIX}_${SLURM_ARRAY_TASK_ID}_consensus_unmapped.bam" \
+    --output "${JDIRECTORY_PATH}/tmp/${SLURM_ARRAY_TASK_ID}/${SAMPLE_PREFIX}_${SLURM_ARRAY_TASK_ID}_consensus_filtered_unmapped.bam" \
+    --ref "${GENOME}" \
+    --reverse-per-base-tags=true --min-reads 3 --max-read-error-rate 0.05 --max-base-error-rate 0.1 --min-base-quality 40 --max-no-call-fraction 0.1
+#
+# # #### Re-aln of consensus reads
+gatk SortSam -I "${JDIRECTORY_PATH}/tmp/${SLURM_ARRAY_TASK_ID}/${SAMPLE_PREFIX}_${SLURM_ARRAY_TASK_ID}_consensus_filtered_unmapped.bam" -O "${JDIRECTORY_PATH}/tmp/${SLURM_ARRAY_TASK_ID}/${SAMPLE_PREFIX}_${SLURM_ARRAY_TASK_ID}_consensus_filtered_unmapped_sorted.bam" -SORT_ORDER "coordinate" --TMP_DIR "${JDIRECTORY_PATH}/tmp/${SLURM_ARRAY_TASK_ID}"
+
+gatk --java-options "${JAVA_OPTIONS}" SamToFastq --INPUT "${JDIRECTORY_PATH}/tmp/${SLURM_ARRAY_TASK_ID}/${SAMPLE_PREFIX}_${SLURM_ARRAY_TASK_ID}_consensus_filtered_unmapped_sorted.bam" -F "${JDIRECTORY_PATH}/tmp/${SLURM_ARRAY_TASK_ID}/${SAMPLE_PREFIX}_${SLURM_ARRAY_TASK_ID}_consensus_filtered_unmapped_R1.fastq" -F2 "${JDIRECTORY_PATH}/tmp/${SLURM_ARRAY_TASK_ID}/${SAMPLE_PREFIX}_${SLURM_ARRAY_TASK_ID}_consensus_filtered_unmapped_R2.fastq" --TMP_DIR "${JDIRECTORY_PATH}/tmp/${SLURM_ARRAY_TASK_ID}"
+
+#
+bwa-mem2 mem -t ${THREADS} "${GENOME}" "${JDIRECTORY_PATH}/tmp/${SLURM_ARRAY_TASK_ID}/${SAMPLE_PREFIX}_${SLURM_ARRAY_TASK_ID}_consensus_filtered_unmapped_R1.fastq" "${JDIRECTORY_PATH}/tmp/${SLURM_ARRAY_TASK_ID}/${SAMPLE_PREFIX}_${SLURM_ARRAY_TASK_ID}_consensus_filtered_unmapped_R2.fastq" | \
+samtools fixmate -O bam - /dev/stdout | \
+gatk --java-options "${JAVA_OPTIONS}" MergeBamAlignment -ALIGNED /dev/stdin -UNMAPPED "${JDIRECTORY_PATH}/tmp/${SLURM_ARRAY_TASK_ID}/${SAMPLE_PREFIX}_${SLURM_ARRAY_TASK_ID}_consensus_filtered_unmapped_sorted.bam" -O "${JDIRECTORY_PATH}/consensusBams/${SAMPLE_PREFIX}_${SLURM_ARRAY_TASK_ID}_single_consensus.bam" -R "${GENOME}" --EXPECTED_ORIENTATIONS "FR" -MAX_GAPS "-1" --SORT_ORDER "coordinate" --CREATE_INDEX true --ALIGNER_PROPER_PAIR_FLAGS false --TMP_DIR "${JDIRECTORY_PATH}/tmp/${SLURM_ARRAY_TASK_ID}"
+# # #
+# #
+# # ##quality check
+gatk CollectHsMetrics -I "${JDIRECTORY_PATH}/consensusBams/${SAMPLE_PREFIX}_${SLURM_ARRAY_TASK_ID}_single_consensus.bam" -O "${JDIRECTORY_PATH}/hsMetrics_afterConsensus/${SAMPLE_PREFIX}_${SLURM_ARRAY_TASK_ID}_single_consensus.HsMetrics" -BI "${TARGET_INTERVAL_LIST}" -TI "${TARGET_INTERVAL_LIST}" --PER_TARGET_COVERAGE "${JDIRECTORY_PATH}/hsMetrics_afterConsensus/${SAMPLE_PREFIX}_${SLURM_ARRAY_TASK_ID}_single_consensus_PerTarget.HsMetrics"  -R "${GENOME}"
+
+# ####clean up
+rm -rf "${JDIRECTORY_PATH}/tmp/${SLURM_ARRAY_TASK_ID}"

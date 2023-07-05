@@ -1,0 +1,84 @@
+SAMPLE_PREFIX="species"
+JAVA_OPTIONS="-Xmx31G -Xms31G"
+GENOME="rheMac10.fa"
+TARGET_INTERVAL_LIST="rhesus_CHIP_panel_merged.interval_list"
+JDIRECTORY_PATH="/path/to/vcf"
+
+CHAIN="rheMac10ToHg38.over.chain"
+LIFT_TARGET_GENOME="hg38.fa" #Usually always human.
+
+
+VCF_DIRECTORY="/path/to/filtered_VCFs" #Usually filtered_VCFs, but can be different.
+
+# mkdir "${VCF_DIRECTORY}/${SLURM_ARRAY_TASK_ID}"
+# # # # #
+# # # # # #
+source activate vep
+
+# --sift will tell if amino acid change matters
+# Cache version 91 for marmoset, 102 for mouse, 104 for human.
+vep --cache --offline --vcf --force_overwrite --species macaca_mulatta --cache_version 106 --input_file "${VCF_DIRECTORY}/${SAMPLE_PREFIX}_${SLURM_ARRAY_TASK_ID}_filtered_PASS_only.vcf" --output_file "${VCF_DIRECTORY}/${SLURM_ARRAY_TASK_ID}/${SAMPLE_PREFIX}_${SLURM_ARRAY_TASK_ID}_VEPAnnotated.vcf" --pick
+ echo "VEP Complete" #VEP doesn't actually notify when completes.
+
+# # Filter so only impact HIGH or MODERATE. This means missense or splicing changes.
+# # This will ignore "splice_region_variant" and 5'UTR or 3'UTR variants.
+filter_vep --format vcf --force_overwrite --input_file "${VCF_DIRECTORY}/${SLURM_ARRAY_TASK_ID}/${SAMPLE_PREFIX}_${SLURM_ARRAY_TASK_ID}_VEPAnnotated.vcf" --output_file "${VCF_DIRECTORY}/${SLURM_ARRAY_TASK_ID}/${SAMPLE_PREFIX}_${SLURM_ARRAY_TASK_ID}_VEPAnnotated_Filtered.vcf" --filter "IMPACT is HIGH or IMPACT is MODERATE"
+ echo "Filter_VEP Complete" #VEP doesn't actually notify when completes.
+
+set -e
+############################# OPTIONAL
+#OPTIONAL step to just filter for PASS only after annotation..
+##This input is VEP annotated but NOT filtered to retain synonymous mutations.
+
+# #Removes the <NNN>  strutural variants
+# bcftools view -e 'ALT[*]~"<"' "${VCF_DIRECTORY}/${SLURM_ARRAY_TASK_ID}/${SAMPLE_PREFIX}_${SLURM_ARRAY_TASK_ID}_VEPAnnotated.vcf" > "${VCF_DIRECTORY}/${SLURM_ARRAY_TASK_ID}/${SAMPLE_PREFIX}_${SLURM_ARRAY_TASK_ID}_VEPAnnotated_noSV.vcf"
+#
+# gatk SelectVariants -V "${VCF_DIRECTORY}/${SLURM_ARRAY_TASK_ID}/${SAMPLE_PREFIX}_${SLURM_ARRAY_TASK_ID}_VEPAnnotated_Filtered.vcf" -O "${VCF_DIRECTORY}/${SLURM_ARRAY_TASK_ID}/${SAMPLE_PREFIX}_${SLURM_ARRAY_TASK_ID}_VEPAnnotated_Filtered_PASSonly.vcf" --exclude-filtered
+#
+# # ################################# end_OPTIONAL
+# #
+# #
+# bcftools +split-vep -c "-" -p "${SAMPLE_PREFIX}_VEP_" "${VCF_DIRECTORY}/${SLURM_ARRAY_TASK_ID}/${SAMPLE_PREFIX}_${SLURM_ARRAY_TASK_ID}_VEPAnnotated_Filtered_PASSonly.vcf" -o "${VCF_DIRECTORY}/${SLURM_ARRAY_TASK_ID}/${SAMPLE_PREFIX}_${SLURM_ARRAY_TASK_ID}_VEPAnnotated_Filtered_Split.vcf" --duplicate
+#
+# # # ################################
+# # # # Liftover and human annotations
+# # # ###############################
+# #
+# # ## may need to use --RECOVER_SWAPPED_REF_ALT in heterozygotes in which the ref is actually the alt.
+# # ## Empirically, many didn't liftover due to above. So flag was added.
+# gatk LiftoverVcf -I "${VCF_DIRECTORY}/${SLURM_ARRAY_TASK_ID}/${SAMPLE_PREFIX}_${SLURM_ARRAY_TASK_ID}_VEPAnnotated_Filtered_Split.vcf" \
+# -O "${VCF_DIRECTORY}/${SLURM_ARRAY_TASK_ID}/${SAMPLE_PREFIX}_${SLURM_ARRAY_TASK_ID}_LiftoverToHuman.vcf" \
+# -CHAIN "${CHAIN}" -REJECT "${VCF_DIRECTORY}/${SAMPLE_PREFIX}_${SLURM_ARRAY_TASK_ID}_LiftoverToHuman_REJECTEDvariants.vcf" \
+# -R "${LIFT_TARGET_GENOME}" --WRITE_ORIGINAL_ALLELES --WRITE_ORIGINAL_POSITION --RECOVER_SWAPPED_REF_ALT \
+# --LIFTOVER_MIN_MATCH 0.80
+##This didn't impact anything. For duplex data, I think long indels with PASS are just getting tossed with liftover.
+
+# source activate vep
+# #
+# vep --cache --offline --vcf --force_overwrite --species homo_sapiens --cache_version 104 --assembly GRCh38 --input_file "${VCF_DIRECTORY}/${SLURM_ARRAY_TASK_ID}/${SAMPLE_PREFIX}_${SLURM_ARRAY_TASK_ID}_LiftoverToHuman.vcf" --output_file "${VCF_DIRECTORY}/${SLURM_ARRAY_TASK_ID}/${SAMPLE_PREFIX}_${SLURM_ARRAY_TASK_ID}_LiftoverToHuman_VEPAnnotated.vcf" --pick
+# ##--vcf_info_field human_CSQ
+#  	 echo "VEP Complete" #VEP doesn't actually notify when completes.
+# #
+# # # # ################################# OPTIONAL
+# # # ## OPTIONAL step to just filter for PASS only after annotation..
+# # # ## This makes sense for Mutect and shearwater, and the provided VARdict. All getting this far need to be pass ony.
+# gatk SelectVariants -V "${VCF_DIRECTORY}/${SLURM_ARRAY_TASK_ID}/${SAMPLE_PREFIX}_${SLURM_ARRAY_TASK_ID}_LiftoverToHuman_VEPAnnotated.vcf" -O "${VCF_DIRECTORY}/${SLURM_ARRAY_TASK_ID}/${SAMPLE_PREFIX}_${SLURM_ARRAY_TASK_ID}_LiftoverToHuman_VEPAnnotated_PASS_only.vcf" --exclude-filtered
+# # ############################### end_OPTIONAL
+# #
+# bcftools +split-vep -c "-" -p "humanVEP_" "${VCF_DIRECTORY}/${SLURM_ARRAY_TASK_ID}/${SAMPLE_PREFIX}_${SLURM_ARRAY_TASK_ID}_LiftoverToHuman_VEPAnnotated_PASS_only.vcf" -o "${VCF_DIRECTORY}/${SLURM_ARRAY_TASK_ID}/${SAMPLE_PREFIX}_${SLURM_ARRAY_TASK_ID}_LiftoverToHuman_VEPAnnotated_Split.vcf" -d
+# # ##-a human_CSQ
+# #
+# gatk VariantsToTable -V "${VCF_DIRECTORY}/${SLURM_ARRAY_TASK_ID}/${SAMPLE_PREFIX}_${SLURM_ARRAY_TASK_ID}_LiftoverToHuman_VEPAnnotated_Split.vcf" \
+# -O "${VCF_DIRECTORY}/${SAMPLE_PREFIX}_${SLURM_ARRAY_TASK_ID}_LiftoverToHuman_VEPAnnotated_Split.table" \
+# -F CHROM -F POS -F TYPE -GF "GT" \
+# -F "humanVEP_IMPACT" -F "humanVEP_Consequence" -F "humanVEP_Gene" -F "humanVEP_SYMBOL" -F "humanVEP_Protein_position"  -F "humanVEP_Amino_acids" \
+# -F "${SAMPLE_PREFIX}_VEP_IMPACT" -F "${SAMPLE_PREFIX}_VEP_Consequence" -F "${SAMPLE_PREFIX}_VEP_Gene" -F "${SAMPLE_PREFIX}_VEP_SYMBOL" -F "${SAMPLE_PREFIX}_VEP_Protein_position"  -F "${SAMPLE_PREFIX}_VEP_Amino_acids" \
+# -GF "AF" -F "HIAF" -F "ADJAF" -GF "AD" -GF "DP" -GF "VD" -GF ALD -GF RD -F HICNT -F HICOV \
+# -F SBF -F QUAL -F REFBIAS -F VARBIAS \
+# -F GERMQ -F MFRL -F MPOS \
+# -F "OriginalAlleles" -F "OriginalContig" -F "OriginalStart" -F MBQ -F MMQ --show-filtered
+
+#  vcf2maf.pl --input-vcf "${VCF_DIRECTORY}/${SLURM_ARRAY_TASK_ID}/${SAMPLE_PREFIX}_${SLURM_ARRAY_TASK_ID}_LiftoverToHuman_VEPAnnotated_Split.vcf" \
+#  --output-maf "${VCF_DIRECTORY}/${SAMPLE_PREFIX}_${SLURM_ARRAY_TASK_ID}_LiftoverToHuman_VEPAnnotated_Split.maf" \
+#  --ref-fasta "${LIFT_TARGET_GENOME}" \
+#  --verbose --inhibit-vep --tumor-id "${SAMPLE_PREFIX}_${SLURM_ARRAY_TASK_ID}" --retain-info REFBIAS,VARBIAS,HICNT,HICOV,HIAF,ADJAF,SBF,PMEAN,PSTD,NM,MQ,QUAL,QSTD,OriginalAlleles,OriginalContig,OriginalStart,${SAMPLE_PREFIX}_VEP_IMPACT,${SAMPLE_PREFIX}_VEP_Consequence,${SAMPLE_PREFIX}_VEP_Gene,${SAMPLE_PREFIX}_VEP_SYMBOL,${SAMPLE_PREFIX}_VEP_Protein_position,${SAMPLE_PREFIX}_VEP_Amino_acids,ERFAP,ATAP  --retain-fmt GT,AF,AD,DP,VD,ALD,RD,MBQ,MMQ

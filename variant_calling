@@ -1,0 +1,52 @@
+#!/bin/bash
+#SBATCH --array=[1-34]
+#SBATCH --job-name=mut/SNP
+#SBATCH --mem=48G
+#SBATCH --output=/storage/goodell/projects/josdlf/out_tmp/mutsampleSNP_%a.out
+#SBATCH --error=/storage/goodell/projects/josdlf/out_tmp/mutsampleSNP_%a.out
+
+# Josephine D used 12/12/2022
+# Applies standard Mutect2. Fits with output of map_script.sh
+
+#sleep $(( RANDOM % 100 ))
+
+## Constants
+SAMPLE_PREFIX="rhesus2"
+JAVA_OPTIONS="-Xmx47G -Xms47G"
+GENOME="rheMac10.fa"
+TARGET_INTERVAL_LIST="rhesus_CHIP_panel_merged.interval_list"
+JDIRECTORY_PATH="/path/to/consensus"
+Variantdb="/chrSNP.vcf.gz"
+
+
+HUMAN_PON="/1000g_pon.hg38.vcf.gz"
+HUMAN_GERMLINE="/af-only-gnomad.hg38.vcf.gz"
+
+#
+gatk --java-options "${JAVA_OPTIONS}" Mutect2 -R "${GENOME}" -L "${DIRECTORY_PATH}/${TARGET_INTERVAL_LIST}" -ip 100 \
+-I "${JDIRECTORY_PATH}/consensusBams/${SAMPLE_PREFIX}_${SLURM_ARRAY_TASK_ID}_single_consensus.bam" \
+-O "${JDIRECTORY_PATH}/tmp/${SAMPLE_PREFIX}_${SLURM_ARRAY_TASK_ID}_unfiltered.vcf" --f1r2-tar-gz "${JDIRECTORY_PATH}/tmp/${SAMPLE_PREFIX}_${SLURM_ARRAY_TASK_ID}_f1r2.tar.gz" \
+--max-reads-per-alignment-start 0 --f1r2-max-depth 2000 --disable-read-filter NotDuplicateReadFilter  \
+--panel-of-normals "${DIRECTORY_PATH}/pon.vcf.gz" --germline-resource "/storage/goodell/home/u244950/Rhesus_extras/add_rhesus.vcf"
+# --bam-output "${JDIRECTORY_PATH}/tmp/${SAMPLE_PREFIX}_${SLURM_ARRAY_TASK_ID}_mutect.bam" --germline-resource "/storage/goodell/home/u244950/Rhesus_extras/add_rhesus.vcf" --linked-de-bruijn-graph --recover-all-dangling-branches #--alleles "${JDIRECTORY_PATH}/force_call_dnmt3a.vcf"
+
+gatk LearnReadOrientationModel -I "${JDIRECTORY_PATH}/tmp/${SAMPLE_PREFIX}_${SLURM_ARRAY_TASK_ID}_f1r2.tar.gz" -O "${JDIRECTORY_PATH}/tmp/${SAMPLE_PREFIX}_${SLURM_ARRAY_TASK_ID}_read_orientation_model.tar.gz" --max-depth 2000 --num-em-iterations 50
+
+
+gatk FilterMutectCalls -R "${GENOME}" -V "${JDIRECTORY_PATH}/tmp/${SAMPLE_PREFIX}_${SLURM_ARRAY_TASK_ID}_unfiltered.vcf" -O "${JDIRECTORY_PATH}/filtered_VCFs/${SAMPLE_PREFIX}_${SLURM_ARRAY_TASK_ID}_filtered.vcf" --ob-priors "${JDIRECTORY_PATH}/tmp/${SAMPLE_PREFIX}_${SLURM_ARRAY_TASK_ID}_read_orientation_model.tar.gz" --max-alt-allele-count 2 --max-events-in-region 5
+###just testing
+
+###Use this to select about a certain VAF, etc.
+##Adding the --exclude-filtered tag will not write any filtered variants to do output file.
+####Adding here since VCF file is what is used downstream. Thus, not in readable table (below) either.
+gatk SelectVariants -R "${GENOME}" -V "${JDIRECTORY_PATH}/filtered_VCFs/${SAMPLE_PREFIX}_${SLURM_ARRAY_TASK_ID}_filtered.vcf" -O "${JDIRECTORY_PATH}/filtered_VCFs/${SAMPLE_PREFIX}_${SLURM_ARRAY_TASK_ID}_filtered_PASS_only.vcf" --exclude-filtered
+#
+# ## making a table of the variants
+gatk VariantsToTable -V "${JDIRECTORY_PATH}/filtered_VCFs/${SAMPLE_PREFIX}_${SLURM_ARRAY_TASK_ID}_filtered_PASS_only.vcf" -O "${JDIRECTORY_PATH}/filtered_VCFs/${SAMPLE_PREFIX}_${SLURM_ARRAY_TASK_ID}_filtered_PASS_only.table" \
+ -F CHROM -F POS -F TYPE -GF "GT" \
+ -F "humanVEP_IMPACT" -F "humanVEP_Consequence" -F "humanVEP_Gene" -F "humanVEP_SYMBOL" -F "humanVEP_Protein_position"  -F "humanVEP_Amino_acids" \
+ -F "${SAMPLE_PREFIX}_VEP_IMPACT" -F "${SAMPLE_PREFIX}_VEP_Consequence" -F "${SAMPLE_PREFIX}_VEP_Gene" -F "${SAMPLE_PREFIX}_VEP_SYMBOL" -F "${SAMPLE_PREFIX}_VEP_Protein_position"  -F "${SAMPLE_PREFIX}_VEP_Amino_acids" \
+ -GF "AF" -F "HIAF" -F "ADJAF" -GF "AD" -GF "DP" -GF "VD" -GF ALD -GF RD -F HICNT -F HICOV -F SBF -F QUAL -F REFBIAS -F VARBIAS \
+ -F GERMQ -F MFRL -F MPOS \
+ -F "OriginalAlleles" -F "OriginalContig" -F "OriginalStart" -F MBQ -F MMQ
+
